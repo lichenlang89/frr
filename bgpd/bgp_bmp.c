@@ -43,6 +43,8 @@
 #include "bgpd/bgp_open.h"
 #include "bgpd/bgp_aspath.h"
 
+extern struct zebra_privs_t bgpd_privs;
+
 static void bmp_close(struct bmp *bmp);
 static struct bmp_bgp *bmp_bgp_find(struct bgp *bgp);
 static void bmp_targets_put(struct bmp_targets *bt);
@@ -1251,12 +1253,40 @@ static int bmp_peer_backward(struct peer *peer)
 	return 0;
 }
 
+/* write one EoR route monitoring message (pre-built update in s) for peer */
+static void bmp_eor_write(struct bmp *bmp, struct stream *s, struct peer *peer, afi_t afi,
+			  uint8_t flags, uint8_t peer_type_flag)
+{
+	struct bgp *bgp = peer->bgp;
+	struct stream *s2;
+	uint64_t peer_distinguisher = 0;
+
+	/* skip this message if peer distinguisher is not available */
+	if (bmp_get_peer_distinguisher(bgp, afi, peer_type_flag, &peer_distinguisher)) {
+		zlog_warn("skipping bmp message for reason: can't get peer distinguisher");
+		return;
+	}
+
+	s2 = stream_new(BGP_MAX_PACKET_SIZE);
+
+	bmp_common_hdr(s2, BMP_VERSION_3, BMP_TYPE_ROUTE_MONITORING);
+
+	bmp_per_peer_hdr(s2, bgp, peer, flags, peer_type_flag, peer_distinguisher, NULL);
+
+	stream_putl_at(s2, BMP_LENGTH_POS, stream_get_endp(s) + stream_get_endp(s2));
+
+	bmp->cnt_update++;
+	pullwr_write_stream(bmp->pullwr, s2);
+	pullwr_write_stream(bmp->pullwr, s);
+	stream_free(s2);
+}
+
 static void bmp_eor(struct bmp *bmp, afi_t afi, safi_t safi, uint8_t flags, uint8_t peer_type_flag,
 		    struct bgp *bgp)
 {
 	struct peer *peer;
 	struct listnode *node;
-	struct stream *s, *s2;
+	struct stream *s;
 	iana_afi_t pkt_afi = IANA_AFI_IPV4;
 	iana_safi_t pkt_safi = IANA_SAFI_UNICAST;
 
@@ -1288,32 +1318,18 @@ static void bmp_eor(struct bmp *bmp, afi_t afi, safi_t safi, uint8_t flags, uint
 
 	bgp_packet_set_size(s);
 
+	/* Loc-RIB is a single instance: one EoR, not one per negotiated peer */
+	if (peer_type_flag == BMP_PEER_TYPE_LOC_RIB_INSTANCE) {
+		bmp_eor_write(bmp, s, bgp->peer_self, afi, flags, peer_type_flag);
+		stream_free(s);
+		return;
+	}
+
 	for (ALL_LIST_ELEMENTS_RO(bgp->peer, node, peer)) {
 		if (!peer->afc_nego[afi][safi])
 			continue;
 
-		uint64_t peer_distinguisher = 0;
-		/* skip this message if peer distinguisher is not available */
-		if (bmp_get_peer_distinguisher(peer->bgp, afi, peer_type_flag, &peer_distinguisher)) {
-			zlog_warn(
-				"skipping bmp message for reason: can't get peer distinguisher");
-			continue;
-		}
-
-		s2 = stream_new(BGP_MAX_PACKET_SIZE);
-
-		bmp_common_hdr(s2, BMP_VERSION_3,
-				BMP_TYPE_ROUTE_MONITORING);
-
-		bmp_per_peer_hdr(s2, bgp, peer, flags, peer_type_flag, peer_distinguisher, NULL);
-
-		stream_putl_at(s2, BMP_LENGTH_POS,
-				stream_get_endp(s) + stream_get_endp(s2));
-
-		bmp->cnt_update++;
-		pullwr_write_stream(bmp->pullwr, s2);
-		pullwr_write_stream(bmp->pullwr, s);
-		stream_free(s2);
+		bmp_eor_write(bmp, s, peer, afi, flags, peer_type_flag);
 	}
 	stream_free(s);
 }
@@ -1893,11 +1909,6 @@ static bool bmp_wrqueue_locrib(struct bmp *bmp, struct pullwr *pullwr)
 		 */
 		goto out;
 	}
-	if (peer != peer->bgp->peer_self && !peer_established(peer->connection)) {
-		/* peer is neither self, nor established
-		 */
-		goto out;
-	}
 
 	bool is_vpn = (bqe->afi == AFI_L2VPN && bqe->safi == SAFI_EVPN) ||
 		      (bqe->safi == SAFI_MPLS_VPN);
@@ -1909,20 +1920,16 @@ static bool bmp_wrqueue_locrib(struct bmp *bmp, struct pullwr *pullwr)
 	struct bgp_path_info *bpi;
 
 	for (bpi = bgp_dest_get_bgp_path_info(bn); bpi; bpi = bpi->next) {
-		if (!CHECK_FLAG(bpi->flags, BGP_PATH_SELECTED))
-			continue;
-		if (bpi->peer == peer)
+		if (CHECK_FLAG(bpi->flags, BGP_PATH_SELECTED))
 			break;
 	}
 
 	bpi_num_labels = BGP_PATH_INFO_NUM_LABELS(bpi);
 
-	bmp_monitor(bmp, peer, 0, BMP_PEER_TYPE_LOC_RIB_INSTANCE, &bqe->p, prd,
+	bmp_monitor(bmp, bpi ? bpi->peer : peer, 0, BMP_PEER_TYPE_LOC_RIB_INSTANCE, &bqe->p, prd,
 		    bpi ? bpi->attr : NULL, bpi, afi, safi,
-		    bpi && bpi->extra ? bpi->extra->bgp_rib_uptime
-				      : (time_t)(-1L),
-		    bpi_num_labels ? bpi->extra->labels->label : NULL,
-		    bpi_num_labels);
+		    bpi && bpi->extra ? bpi->extra->bgp_rib_uptime : (time_t)(-1L),
+		    bpi_num_labels ? bpi->extra->labels->label : NULL, bpi_num_labels);
 	written = true;
 
 out:
@@ -3087,8 +3094,11 @@ static void bmp_active_thread(struct event *t)
 			vrf_id = VRF_DEFAULT;
 		else
 			vrf_id = ba->targets->bgp->vrf_id;
-		resolver_resolve(&ba->resq, AF_UNSPEC, vrf_id, ba->hostname,
-				 bmp_active_resolved);
+		/* The resolver needs privileges to enter and leave a VRF netns. */
+		frr_with_privs(&bgpd_privs) {
+			resolver_resolve(&ba->resq, AF_UNSPEC, vrf_id,
+					 ba->hostname, bmp_active_resolved);
+		}
 		return;
 	}
 
@@ -3868,7 +3878,11 @@ static int bmp_route_update_bgpbmp(struct bmp_targets *bt, afi_t afi, safi_t saf
 {
 	bool is_withdraw = old_route && !new_route;
 	struct bgp_path_info *updated_route = is_withdraw ? old_route : new_route;
-	struct peer *peer = updated_route->peer;
+	/* The Loc-RIB holds one path per prefix, so its queue items are keyed
+	 * by the instance and not by a peer that can go down or be deleted
+	 * before the queue is written.
+	 */
+	struct peer *peer = updated_route->peer->bgp->peer_self;
 	struct bmp *bmp;
 	struct bmp_queue_entry *last_item;
 

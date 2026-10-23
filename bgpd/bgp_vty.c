@@ -6295,6 +6295,9 @@ DEFUN (neighbor_set_peer_group,
 
 	ret = peer_group_bind(bgp, &su, peer, group, &as);
 
+	if (ret == 0 && group->conf->as_type != AS_UNSPECIFIED)
+		bgp_need_listening(bgp, vty);
+
 	return bgp_vty_return(vty, ret);
 }
 
@@ -6317,7 +6320,7 @@ DEFUN (no_neighbor_set_peer_group,
 	int idx_peer = 2;
 	int idx_word = 4;
 	int ret;
-	struct peer *peer;
+	struct peer *peer, *other;
 	struct peer_group *group;
 
 	peer = peer_lookup_vty(vty, argv[idx_peer]->arg);
@@ -6333,8 +6336,13 @@ DEFUN (no_neighbor_set_peer_group,
 	if (CHECK_FLAG(peer->flags, PEER_FLAG_CAPABILITY_ENHE))
 		bgp_zebra_terminate_radv(peer->bgp, peer);
 
+	other = peer->doppelganger;
 	peer_notify_unconfig(peer->connection);
 	ret = peer_delete(peer);
+	if (other && other->connection->status != Deleted) {
+		peer_notify_unconfig(other->connection);
+		peer_delete(other);
+	}
 
 	/*
 	 * if need stop listening
@@ -15893,8 +15901,7 @@ static void bgp_show_peer_afi(struct vty *vty, struct peer *p, afi_t afi,
 		else
 			json_object_free(json_af);
 
-		snprintf(orf_pfx_name, sizeof(orf_pfx_name), "%s.%d.%d",
-			 p->host, afi, safi);
+		peer_orf_plist_name(p, afi, safi, orf_pfx_name, sizeof(orf_pfx_name));
 		orf_pfx_count = prefix_bgp_show_prefix_list(
 			NULL, afi, orf_pfx_name, use_json);
 
@@ -16218,8 +16225,7 @@ static void bgp_show_peer_afi(struct vty *vty, struct peer *p, afi_t afi,
 				PEER_CAP_ORF_PREFIX_RM_RCV, use_json, NULL);
 		}
 
-		snprintf(orf_pfx_name, sizeof(orf_pfx_name), "%s.%d.%d",
-			 p->host, afi, safi);
+		peer_orf_plist_name(p, afi, safi, orf_pfx_name, sizeof(orf_pfx_name));
 		orf_pfx_count = prefix_bgp_show_prefix_list(
 			NULL, afi, orf_pfx_name, use_json);
 
@@ -19047,7 +19053,7 @@ DEFPY (show_bgp_neighbor_orf_prefix_list,
 	if (!peer)
 		return CMD_WARNING;
 
-	snprintf(orf_name, sizeof(orf_name), "%s.%d.%d", peer->host, afi, safi);
+	peer_orf_plist_name(peer, afi, safi, orf_name, sizeof(orf_name));
 	if (!prefix_bgp_show_prefix_list(NULL, afi, orf_name, use_json)) {
 		if (use_json)
 			vty_out(vty, "{}\n");

@@ -2850,6 +2850,8 @@ extern void bgp_zebra_suppress_fib_pending_config_retry(void);
 
 extern int peer_activate(struct peer *peer, afi_t afi, safi_t safi);
 extern int peer_deactivate(struct peer *peer, afi_t afi, safi_t safi);
+extern void peer_orf_plist_name(const struct peer *peer, afi_t afi, safi_t safi, char *buf,
+				size_t size);
 
 extern int peer_group_bind(struct bgp *bgp, union sockunion *su, struct peer *peer,
 			   struct peer_group *group, as_t *as);
@@ -3419,6 +3421,11 @@ DECLARE_HOOK(bgp_rpki_prefix_status,
 	      const struct prefix *prefix),
 	     (peer, attr, prefix));
 DECLARE_HOOK(bgp_rpki_connection_status, (const char *vrf_name), (vrf_name));
+DECLARE_HOOK(bgp_aspa_path_status, (struct peer *peer, struct attr *attr, int direction),
+	     (peer, attr, direction));
+
+#define BGP_ASPA_UPSTREAM   0
+#define BGP_ASPA_DOWNSTREAM 1
 
 void peer_nsf_stop(struct peer *peer);
 

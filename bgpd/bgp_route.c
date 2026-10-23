@@ -152,6 +152,9 @@ DEFINE_HOOK(bgp_rpki_prefix_status,
 	     const struct prefix *prefix),
 	    (peer, attr, prefix));
 
+DEFINE_HOOK(bgp_aspa_path_status, (struct peer *peer, struct attr *attr, int direction),
+	    (peer, attr, direction));
+
 DEFINE_HOOK(bgp_route_update,
 	    (struct bgp *bgp, afi_t afi, safi_t safi, struct bgp_dest *bn,
 	     struct bgp_path_info *old_route, struct bgp_path_info *new_route),
@@ -3536,6 +3539,9 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 		}
 	}
 
+	/* Prepend the local-AS toward EBGP */
+	bgp_peer_prepend_local_as(peer, afi, safi, attr);
+
 	/* Handle originator-id and cluster-list for route reflection */
 	if (ibgp_to_ibgp) {
 		/* Prepend cluster-id to cluster list */
@@ -4192,9 +4198,21 @@ static void bgp_process_evpn_route_injection(struct bgp *bgp, afi_t afi,
 	if ((afi != AFI_IP && afi != AFI_IP6) || (safi != SAFI_UNICAST && safi != SAFI_MPLS_VPN))
 		return;
 
+	if (!advertise_type5_routes_bestpath(bgp, afi, safi))
+		return;
 
-	if (advertise_type5_routes_bestpath(bgp, afi, safi) && new_select &&
-	    is_route_injectable_into_evpn(bgp, afi, safi, new_select)) {
+	/*
+	 * Local type-5 routes are keyed by the path they were exported from
+	 * (type5_originator), so advertising new_select does not replace the
+	 * route exported from old_select.  Withdraw it whenever the best path
+	 * moves, whether or not new_select gets exported in its place.
+	 * Like bgp_evpn_withdraw_type5_routes(), do not skip suppressed paths.
+	 */
+	if (old_select && old_select != new_select &&
+	    is_route_injectable_into_evpn_non_supp(bgp, afi, safi, old_select))
+		bgp_evpn_withdraw_type5_route(bgp, old_select, p, afi, safi, 0);
+
+	if (new_select && is_route_injectable_into_evpn(bgp, afi, safi, new_select)) {
 		/* apply the route-map */
 		if (bgp->adv_cmd_rmap[afi][safi].map) {
 			route_map_result_t ret;
@@ -4215,13 +4233,7 @@ static void bgp_process_evpn_route_injection(struct bgp *bgp, afi_t afi,
 
 			if (ret == RMAP_DENYMATCH) {
 				bgp_attr_flush(&dummy_attr);
-				/*
-				 * I believe it is possible that a new routemap can be applied at the
-				 * same time that a route update happens that causes us to have to
-				 * remove both the old and new selects.
-				 * Very Unlikely though, but let's cover our caluntas
-				 */
-				bgp_evpn_withdraw_type5_route(bgp, old_select, p, afi, safi, 0);
+				/* A different old_select was already withdrawn above */
 				bgp_evpn_withdraw_type5_route(bgp, new_select, p, afi, safi, 0);
 			} else
 				bgp_evpn_advertise_type5_route(bgp, new_select, p, &dummy_attr,
@@ -4231,9 +4243,7 @@ static void bgp_process_evpn_route_injection(struct bgp *bgp, afi_t afi,
 			bgp_evpn_advertise_type5_route(bgp, new_select, p, new_select->attr, afi,
 						       safi, 0);
 		}
-	} else if (advertise_type5_routes_bestpath(bgp, afi, safi) && old_select &&
-		   is_route_injectable_into_evpn(bgp, afi, safi, old_select))
-		bgp_evpn_withdraw_type5_route(bgp, old_select, p, afi, safi, 0);
+	}
 }
 
 /*
@@ -11542,6 +11552,23 @@ static const char *bgp_rpki_validation2str(enum rpki_states v_state)
 	return "ERROR";
 }
 
+static const char *bgp_aspa_validation2str(enum aspa_states v_state)
+{
+	switch (v_state) {
+	case ASPA_NOT_BEING_USED:
+		return "not used";
+	case ASPA_VALID:
+		return "valid";
+	case ASPA_INVALID:
+		return "invalid";
+	case ASPA_UNKNOWN:
+		return "unknown";
+	}
+
+	assert(!"We should never get here this is a dev escape");
+	return "ERROR";
+}
+
 static int bgp_aggregate_unset(struct vty *vty, const char *prefix_str,
 			       afi_t afi, safi_t safi)
 {
@@ -14475,6 +14502,24 @@ skip_nexthop:
 				bgp_rpki_validation2str(rpki_curr_state));
 	}
 
+	enum aspa_states aspa_up, aspa_down;
+
+	aspa_up = hook_call(bgp_aspa_path_status, path->peer, path->attr, BGP_ASPA_UPSTREAM);
+	aspa_down = hook_call(bgp_aspa_path_status, path->peer, path->attr, BGP_ASPA_DOWNSTREAM);
+
+	if (aspa_up != ASPA_NOT_BEING_USED || aspa_down != ASPA_NOT_BEING_USED) {
+		if (json_paths) {
+			json_object_string_add(json_path, "aspaUpstreamState",
+					       bgp_aspa_validation2str(aspa_up));
+			json_object_string_add(json_path, "aspaDownstreamState",
+					       bgp_aspa_validation2str(aspa_down));
+		} else {
+			vty_out(vty, ", aspa (upstream: %s, downstream: %s)",
+				bgp_aspa_validation2str(aspa_up),
+				bgp_aspa_validation2str(aspa_down));
+		}
+	}
+
 	if (json_bestpath)
 		json_object_object_add(json_path, "bestpath", json_bestpath);
 
@@ -15220,6 +15265,17 @@ static int bgp_show_table(struct vty *vty, struct bgp *bgp, afi_t afi, safi_t sa
 				if (type == bgp_show_type_rpki &&
 				    rpki_target_state != RPKI_NOT_BEING_USED &&
 				    rpki_curr_state != rpki_target_state)
+					continue;
+			}
+
+			if (type == bgp_show_type_aspa) {
+				struct bgp_aspa_show_filter *aspa_filter = output_arg;
+				enum aspa_states aspa_curr_state;
+
+				aspa_curr_state = hook_call(bgp_aspa_path_status, pi->peer,
+							    pi->attr, aspa_filter->direction);
+
+				if (aspa_curr_state != aspa_filter->state)
 					continue;
 			}
 
@@ -16689,6 +16745,7 @@ DEFPY(show_ip_bgp, show_ip_bgp_cmd,
           |access-list ACCESSLIST_NAME\
           |route-map RMAP_NAME\
           |rpki <invalid|valid|notfound>\
+          |aspa <upstream|downstream> <invalid|valid|unknown>\
           |version (1-4294967295)\
           |alias ALIAS_NAME\
           |A.B.C.D/M longer-prefixes\
@@ -16735,6 +16792,12 @@ DEFPY(show_ip_bgp, show_ip_bgp_cmd,
       "A valid path as determined by rpki\n"
       "A invalid path as determined by rpki\n"
       "A path that has no rpki data\n"
+      "Display only paths that match the specified ASPA state\n"
+      "Verify the AS_PATH as received from a customer, lateral peer or RS-client\n"
+      "Verify the AS_PATH as received from a provider or route server\n"
+      "An invalid AS_PATH as determined by ASPA\n"
+      "A valid AS_PATH as determined by ASPA\n"
+      "An AS_PATH that cannot be fully verified by ASPA\n"
       "Display prefixes with matching version numbers\n"
       "Version number and above\n"
       "Display prefixes with matching BGP community alias\n"
@@ -16762,6 +16825,7 @@ DEFPY(show_ip_bgp, show_ip_bgp_cmd,
 	bool first = true;
 	uint16_t show_flags = 0;
 	enum rpki_states rpki_target_state = RPKI_NOT_BEING_USED;
+	struct bgp_aspa_show_filter aspa_filter = {};
 	struct prefix p;
 
 	if (uj) {
@@ -16917,6 +16981,23 @@ DEFPY(show_ip_bgp, show_ip_bgp_cmd,
 			rpki_target_state = RPKI_INVALID;
 		else if (argv_find(argv, argc, "notfound", &idx))
 			rpki_target_state = RPKI_NOTFOUND;
+	}
+
+	if (argv_find(argv, argc, "aspa", &idx)) {
+		sh_type = bgp_show_type_aspa;
+
+		aspa_filter.direction = argv_find(argv, argc, "downstream", &idx)
+						? BGP_ASPA_DOWNSTREAM
+						: BGP_ASPA_UPSTREAM;
+
+		if (argv_find(argv, argc, "valid", &idx))
+			aspa_filter.state = ASPA_VALID;
+		else if (argv_find(argv, argc, "invalid", &idx))
+			aspa_filter.state = ASPA_INVALID;
+		else
+			aspa_filter.state = ASPA_UNKNOWN;
+
+		output_arg = &aspa_filter;
 	}
 
 	/* Display prefixes with matching version numbers */
@@ -19176,7 +19257,7 @@ DEFUN (show_ip_bgp_neighbor_received_prefix_filter,
 	if (!peer)
 		return CMD_WARNING;
 
-	snprintf(name, sizeof(name), "%s.%d.%d", peer->host, afi, safi);
+	peer_orf_plist_name(peer, afi, safi, name, sizeof(name));
 	count = prefix_bgp_show_prefix_list(NULL, afi, name, uj);
 	if (count) {
 		if (!uj)
