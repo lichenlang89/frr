@@ -77,3 +77,8 @@ include tests/ospfd/subdir.am
 include tests/ospf6d/subdir.am
 include tests/zebra/subdir.am
 include tests/lib/subdir.am
+
+if EGPD
+check_PROGRAMS += egpd/test_packet
+TESTS = egpd/test_packet
+endif

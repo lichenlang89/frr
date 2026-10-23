@@ -128,6 +128,7 @@ struct vtysh_client vtysh_client[] = {
 	{.name = "eigrpd", .flag = VTYSH_EIGRPD},
 	{.name = "babeld", .flag = VTYSH_BABELD},
 	{.name = "sharpd", .flag = VTYSH_SHARPD},
+	{.name = "egpd", .flag = VTYSH_EGPD},
 	{.name = "fabricd", .flag = VTYSH_FABRICD},
 	{.name = "pbrd", .flag = VTYSH_PBRD},
 	{.name = "staticd", .flag = VTYSH_STATICD},

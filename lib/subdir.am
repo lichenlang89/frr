@@ -589,6 +589,9 @@ DISTCLEANFILES += lib/command_lex.h \
 		  lib/command_parse.c
 
 rt_enabled =
+if EGPD
+rt_enabled += --enabled egpd
+endif
 
 if BABELD
 rt_enabled += --enabled babeld
