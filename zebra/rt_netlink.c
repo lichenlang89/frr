@@ -244,6 +244,9 @@ static inline bool is_selfroute(int proto)
 int zebra2proto(int proto)
 {
 	switch (proto) {
+	case ZEBRA_ROUTE_EGP:
+		proto = RTPROT_ZEBRA;
+		break;
 	case ZEBRA_ROUTE_BABEL:
 		proto = RTPROT_BABEL;
 		break;

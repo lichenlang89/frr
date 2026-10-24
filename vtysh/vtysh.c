@@ -128,6 +128,7 @@ struct vtysh_client vtysh_client[] = {
 	{.name = "eigrpd", .flag = VTYSH_EIGRPD},
 	{.name = "babeld", .flag = VTYSH_BABELD},
 	{.name = "sharpd", .flag = VTYSH_SHARPD},
+	{.name = "egpd", .flag = VTYSH_EGPD},
 	{.name = "fabricd", .flag = VTYSH_FABRICD},
 	{.name = "pbrd", .flag = VTYSH_PBRD},
 	{.name = "staticd", .flag = VTYSH_STATICD},
@@ -1168,6 +1169,13 @@ static struct cmd_node bgp_node = {
 static struct cmd_node rip_node = {
 	.name = "rip",
 	.node = RIP_NODE,
+	.parent_node = CONFIG_NODE,
+	.prompt = "%s(config-router)# ",
+};
+
+static struct cmd_node egp_node = {
+	.name = "egp",
+	.node = EGP_NODE,
 	.parent_node = CONFIG_NODE,
 	.prompt = "%s(config-router)# ",
 };
@@ -5356,6 +5364,7 @@ void vtysh_init_vty(void)
 	install_node(&bgp_srv6_node);
 	install_node(&bgp_ls_node);
 	install_node(&rip_node);
+	install_node(&egp_node);
 	install_node(&ripng_node);
 	install_node(&ospf_node);
 	install_node(&ospf6_node);

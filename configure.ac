@@ -754,6 +754,7 @@ AC_ARG_ENABLE([pim6d],
   AS_HELP_STRING([--disable-pim6d], [do not build pim6d]))
 AC_ARG_ENABLE([pbrd],
   AS_HELP_STRING([--disable-pbrd], [do not build pbrd]))
+AC_ARG_ENABLE([egpd], AS_HELP_STRING([--enable-egpd], [build experimental EGP daemon]))
 AC_ARG_ENABLE([sharpd],
   AS_HELP_STRING([--enable-sharpd], [build sharpd]))
 AC_ARG_ENABLE([staticd],
@@ -1887,6 +1888,8 @@ AS_IF([test "$enable_pbrd" != "no"], [
   AC_DEFINE([HAVE_PBRD], [1], [pbrd])
 ])
 
+AS_IF([test "$enable_egpd" = "yes"], [AC_DEFINE([HAVE_EGPD], [1], [egpd])])
+
 AS_IF([test "$enable_sharpd" = "yes"], [
   AC_DEFINE([HAVE_SHARPD], [1], [sharpd])
 ])
@@ -2830,6 +2833,7 @@ AM_CONDITIONAL([ISISD], [test "$enable_isisd" != "no"])
 AM_CONDITIONAL([PIMD], [test "$enable_pimd" != "no"])
 AM_CONDITIONAL([PIM6D], [test "$enable_pim6d" != "no"])
 AM_CONDITIONAL([PBRD], [test "$enable_pbrd" != "no"])
+AM_CONDITIONAL([EGPD], [test "$enable_egpd" = "yes"])
 AM_CONDITIONAL([SHARPD], [test "$enable_sharpd" = "yes"])
 AM_CONDITIONAL([STATICD], [test "$enable_staticd" != "no"])
 AM_CONDITIONAL([FABRICD], [test "$enable_fabricd" != "no"])

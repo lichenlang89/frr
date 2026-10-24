@@ -209,6 +209,7 @@ include ldpd/subdir.am
 include babeld/subdir.am
 include eigrpd/subdir.am
 include sharpd/subdir.am
+include egpd/subdir.am
 include pimd/subdir.am
 include pbrd/subdir.am
 include staticd/subdir.am
