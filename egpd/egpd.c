@@ -73,8 +73,7 @@ static void route_send(const struct egp_route *r, bool add)
 	api.nexthops[0].type = NEXTHOP_TYPE_IPV4;
 	api.nexthops[0].vrf_id = VRF_DEFAULT;
 	api.nexthops[0].gate.ipv4 = r->gateway;
-	if (add)
-		SET_FLAG(api.flags, ZEBRA_FLAG_ALLOW_RECURSION);
+	SET_FLAG(api.flags, ZEBRA_FLAG_ALLOW_RECURSION);
 	zclient_route_send(add ? ZEBRA_ROUTE_ADD : ZEBRA_ROUTE_DELETE, zc, &api);
 }
 static const struct egp_route *best(struct in_addr net)

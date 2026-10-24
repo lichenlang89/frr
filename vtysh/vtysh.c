@@ -1173,6 +1173,13 @@ static struct cmd_node rip_node = {
 	.prompt = "%s(config-router)# ",
 };
 
+static struct cmd_node egp_node = {
+	.name = "egp",
+	.node = EGP_NODE,
+	.parent_node = CONFIG_NODE,
+	.prompt = "%s(config-router)# ",
+};
+
 static struct cmd_node isis_node = {
 	.name = "isis",
 	.node = ISIS_NODE,
@@ -5357,6 +5364,7 @@ void vtysh_init_vty(void)
 	install_node(&bgp_srv6_node);
 	install_node(&bgp_ls_node);
 	install_node(&rip_node);
+	install_node(&egp_node);
 	install_node(&ripng_node);
 	install_node(&ospf_node);
 	install_node(&ospf6_node);
