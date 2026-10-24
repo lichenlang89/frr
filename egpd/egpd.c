@@ -73,6 +73,8 @@ static void route_send(const struct egp_route *r, bool add)
 	api.nexthops[0].type = NEXTHOP_TYPE_IPV4;
 	api.nexthops[0].vrf_id = VRF_DEFAULT;
 	api.nexthops[0].gate.ipv4 = r->gateway;
+	if (add)
+		SET_FLAG(api.flags, ZEBRA_FLAG_ALLOW_RECURSION);
 	zclient_route_send(add ? ZEBRA_ROUTE_ADD : ZEBRA_ROUTE_DELETE, zc, &api);
 }
 static const struct egp_route *best(struct in_addr net)
@@ -414,17 +416,26 @@ DEFUN(show_egp, show_egp_cmd, "show ip egp neighbors", SHOW_STR IP_STR "EGP\nNei
 static int config_write(struct vty *vty)
 {
 	size_t i;
-	if (!local_as)
-		return 0;
-	vty_out(vty, "egp local-as %u\negp timers %u %u\n", local_as, hello_interval,
-		poll_interval);
-	for (i = 0; i < network_count; i++)
+	int wrote = 0;
+	if (local_as) {
+		vty_out(vty, "egp local-as %u\n", local_as);
+		wrote = 1;
+	}
+	if (hello_interval != 30 || poll_interval != 120) {
+		vty_out(vty, "egp timers %u %u\n", hello_interval, poll_interval);
+		wrote = 1;
+	}
+	for (i = 0; i < network_count; i++) {
 		vty_out(vty, "egp network %pI4\n", &networks[i].net);
+		wrote = 1;
+	}
 	for (i = 0; i < MAX_PEERS; i++)
-		if (peers[i].used)
+		if (peers[i].used) {
 			vty_out(vty, "egp neighbor %pI4 local-address %pI4 remote-as %u\n",
 				&peers[i].peer, &peers[i].local, peers[i].as);
-	return 1;
+			wrote = 1;
+		}
+	return wrote;
 }
 static struct cmd_node egp_node = { .name = "egp",
 				    .node = EGP_NODE,
